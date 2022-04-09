@@ -119,6 +119,6 @@ public class App
 
 
         // Create instance
-        createInstance("test", "ami-0c02fb55956c7d316", "subnet-01e626b4b894e72ae");
+        createInstance("test", "amiId", "subnetId");
     }
 }
