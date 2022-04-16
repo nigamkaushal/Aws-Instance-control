@@ -9,6 +9,8 @@ import com.amazonaws.services.ec2.model.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class App 
 {
@@ -23,7 +25,7 @@ public class App
         }
     }
 
-    final static AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(Regions.US_EAST_1)
+    static final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(Regions.US_EAST_1)
             .withCredentials(new AWSStaticCredentialsProvider(credentials)).build();
 
     public static void startInstance(String instance_id)
@@ -99,11 +101,55 @@ public class App
                 .withResources(reservation_id)
                 .withTags(tag);
 
-        CreateTagsResult tag_response = ec2.createTags(tag_request);
+        ec2.createTags(tag_request);
 
         System.out.printf(
                 "Successfully started EC2 instance %s based on AMI %s",
                 reservation_id, amiId);
+    }
+
+    public static void createVpc(String name){
+        Tag tag = new Tag()
+            .withKey("Name")
+            .withValue(name);
+        List<Tag> tagList = new ArrayList<>();
+        tagList.add(tag);
+        ResourceType resourceType = ResourceType.Vpc;
+        TagSpecification tagSpecification = new TagSpecification();
+        tagSpecification.setTags(tagList);
+        tagSpecification.setResourceType(resourceType);
+        CreateVpcRequest vpcRequest = new CreateVpcRequest("10.0.0.0/16")
+                .withTagSpecifications(tagSpecification);
+        CreateVpcResult vpcResult = ec2.createVpc(vpcRequest);
+        System.out.println(vpcResult.getVpc().toString());
+    }
+
+    public static void setVpcTag(List<Tag> tagList, String vpcId){
+        CreateTagsRequest tagsRequest = new CreateTagsRequest().withResources(vpcId);
+        tagsRequest.withTags(tagList);
+        ec2.createTags(tagsRequest);
+    }
+
+    public static void deleteVpcTag(List<Tag> tagList, String vpcId){
+        DeleteTagsRequest tagsRequest = new DeleteTagsRequest().withResources(vpcId);
+        tagsRequest.withTags(tagList);
+        ec2.deleteTags(tagsRequest);
+    }
+
+    public static void createSubnet(String name, String vpcId, String cidr, String availabilityZone){
+        Tag tag = new Tag()
+                .withKey("Name")
+                .withValue(name);
+        ResourceType resourceType = ResourceType.Subnet;
+        TagSpecification tagSpecification = new TagSpecification();
+        tagSpecification.withTags(tag);
+        tagSpecification.setResourceType(resourceType);
+        CreateSubnetRequest subnetRequest = new CreateSubnetRequest(vpcId, cidr)
+                .withAvailabilityZone(availabilityZone)
+                .withTagSpecifications(tagSpecification);
+
+        CreateSubnetResult subnetResult = ec2.createSubnet(subnetRequest);
+        System.out.println(subnetResult.toString());
     }
 
     public static void main( String[] args )
@@ -119,6 +165,22 @@ public class App
 
 
         // Create instance
-        createInstance("test", "amiId", "subnetId");
+//        createInstance("test", "amiId", "subnetId");
+
+        // Create Vpc with tag
+//        createVpc("test");
+
+
+        // Set VPC tags
+//        List<Tag> tagList = Arrays.asList(new Tag("Name", "changed"), new Tag("Owner", "Kaushal"), new Tag("Owner 2", "sumit"));
+//        setVpcTag(tagList, "vpc-0e748fca053aa1ffd");
+
+
+        // Delete VPC Tags
+//        List<Tag> tagList = Arrays.asList(new Tag("Owner"), new Tag("Owner 2"));
+//        deleteVpcTag(tagList, "vpc-0e748fca053aa1ffd");
+
+        // Create Subnet
+//        createSubnet("Test", "vpc-0e748fca053aa1ffd", "10.0.0.0/27", "us-east-1b");
     }
 }
