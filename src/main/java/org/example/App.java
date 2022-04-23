@@ -6,14 +6,16 @@ import com.amazonaws.regions.Regions;
 import com.amazonaws.services.ec2.AmazonEC2;
 import com.amazonaws.services.ec2.AmazonEC2ClientBuilder;
 import com.amazonaws.services.ec2.model.*;
+import com.amazonaws.util.Base64;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
-public class App 
+public class App
 {
     static File awsCredentialsFile=new File("src/main/java/org/example/credFile.txt");
     static AWSCredentials credentials;
@@ -26,7 +28,7 @@ public class App
         }
     }
 
-    static final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(Regions.US_EAST_1)
+    static final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(Regions.AP_SOUTH_1)
             .withCredentials(new AWSStaticCredentialsProvider(credentials)).build();
 
     public static void startInstance(String instanceId)
@@ -101,13 +103,22 @@ public class App
                 .withDeviceIndex(0)
                 .withAssociatePublicIpAddress(true)
                 .withSubnetId(subnetId);
+        String data = "#!/bin/bash \n" + "amazon-linux-extras install nginx \n" + "systemctl start nginx \n";
+        String base64Data = null;
+        try {
+            base64Data = new String(Base64.encode(data.getBytes(StandardCharsets.UTF_8)), "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            throw new RuntimeException(e);
+        }
+
         RunInstancesRequest runRequest = new RunInstancesRequest()
                 .withImageId(amiId)
                 .withInstanceType(InstanceType.T2Micro)
                 .withMaxCount(1)
                 .withMinCount(1)
                 .withNetworkInterfaces(interfaceSpecification)
-                .withKeyName(keyName);
+                .withKeyName(keyName)
+                .withUserData(base64Data);
 
         RunInstancesResult runResponse = ec2.runInstances(runRequest);
         String reservationId = runResponse.getReservation().getInstances().get(0).getInstanceId();
@@ -194,7 +205,7 @@ public class App
         return result.getInternetGateway().getInternetGatewayId();
     }
 
-    public static void createRouteTable(String name, String vpcId, String subnetId, String igwId){
+    public static void createRouteTableWithIGW(String name, String vpcId, String subnetId, String igwId){
         Tag tag = new Tag()
                 .withKey("Name")
                 .withValue(name);
@@ -215,6 +226,30 @@ public class App
                 .withRouteTableId(result.getRouteTable().getRouteTableId())
                 .withDestinationCidrBlock("0.0.0.0/0")
                 .withGatewayId(igwId);
+        ec2.createRoute(createRouteRequest);
+    }
+
+    public static void createRouteTableWithNGW(String name, String vpcId, String subnetId, String ngwId){
+        Tag tag = new Tag()
+                .withKey("Name")
+                .withValue(name);
+        ResourceType resourceType = ResourceType.RouteTable;
+        TagSpecification tagSpecification = new TagSpecification();
+        tagSpecification.withTags(tag);
+        tagSpecification.setResourceType(resourceType);
+        CreateRouteTableRequest request = new CreateRouteTableRequest()
+                .withTagSpecifications(tagSpecification)
+                .withVpcId(vpcId);
+        CreateRouteTableResult result = ec2.createRouteTable(request);
+        System.out.println(result.toString());
+        AssociateRouteTableRequest associateRouteTableRequest = new AssociateRouteTableRequest()
+                .withRouteTableId(result.getRouteTable().getRouteTableId())
+                .withSubnetId(subnetId);
+        ec2.associateRouteTable(associateRouteTableRequest);
+        CreateRouteRequest createRouteRequest = new CreateRouteRequest()
+                .withRouteTableId(result.getRouteTable().getRouteTableId())
+                .withDestinationCidrBlock("0.0.0.0/0")
+                .withNatGatewayId(ngwId);
         ec2.createRoute(createRouteRequest);
     }
 
@@ -242,7 +277,54 @@ public class App
                 .withTagSpecifications(tagSpecification);
         AllocateAddressResult allocateAddressResult = ec2.allocateAddress(allocateAddressRequest);
         System.out.println(allocateAddressResult.toString());
-        return allocateAddressResult.getPublicIp();
+        return allocateAddressResult.getAllocationId();
+    }
+
+    public static String createNATGateway(String name, String subnetId, String allocationId){
+        Tag tag = new Tag()
+                .withKey("Name")
+                .withValue(name);
+        ResourceType resourceType = ResourceType.Natgateway;
+        TagSpecification tagSpecification = new TagSpecification();
+        tagSpecification.withTags(tag);
+        tagSpecification.setResourceType(resourceType);
+        CreateNatGatewayRequest createNatGatewayRequest = new CreateNatGatewayRequest()
+                .withTagSpecifications(tagSpecification)
+                .withSubnetId(subnetId)
+                .withConnectivityType(ConnectivityType.Public)
+                .withAllocationId(allocationId);
+        CreateNatGatewayResult result =  ec2.createNatGateway(createNatGatewayRequest);
+        System.out.println(result);
+        return result.getNatGateway().getNatGatewayId();
+    }
+
+    public static String createSecurityGroup(){
+        String myIp = null;
+        try{
+            URL url = new URL("http://checkip.amazonaws.com/");
+            BufferedReader br = new BufferedReader(new InputStreamReader(url.openStream()));
+            myIp = br.readLine();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        IpRange ipRange1 = new IpRange().withCidrIp(myIp+ "/32");
+        IpPermission ipPermission = new IpPermission()
+                .withIpv4Ranges(ipRange1)
+                .withIpProtocol("tcp")
+                .withFromPort(22)
+                .withToPort(22);
+        CreateSecurityGroupRequest securityGroupRequest = new CreateSecurityGroupRequest()
+                .withGroupName("TestSG")
+                .withDescription("Test SG");
+        CreateSecurityGroupResult securityGroupResult = ec2.createSecurityGroup(securityGroupRequest);
+        System.out.println(securityGroupResult.toString());
+
+        AuthorizeSecurityGroupIngressRequest authorizeSecurityGroupIngressRequest =
+                new AuthorizeSecurityGroupIngressRequest()
+                        .withGroupName("TestSG")
+                        .withIpPermissions(ipPermission);
+        ec2.authorizeSecurityGroupIngress(authorizeSecurityGroupIngressRequest);
+        return securityGroupResult.getGroupId();
     }
 
     public static void main( String[] args )
@@ -256,10 +338,17 @@ public class App
 //            stopInstance(instanceId);
 //        }
 
+        // Create Keypair
+//        createKeyPair("keypair2");
+
+        // Create Elastic IP
+//        String elasticIP = createElasticAddress("testElastic");
+
+        // Associate Elastic IP
+//        allocateElasticIP(elasticIP, instanceId);
 
         // Create Vpc with tag
 //        String vpcId = createVpc("testVPC");
-
 
         // Set VPC tags
 //        List<Tag> tagList = Arrays.asList(new Tag("Name", "changed"), new Tag("Owner", "Kaushal"), new Tag("Owner 2", "sumit"));
@@ -271,27 +360,34 @@ public class App
 //        deleteVpcTag(tagList, "vpcId");
 
         // Create Subnet
-//        String subnetId = createSubnet("TestSubnet", vpcId, "10.0.0.0/27", "us-east-1b");
+//        String subnetId = createSubnet("TestSubnet", vpcId, "10.0.0.0/27", "ap-south-1a");
 
         // Create IGW
 //        String igwId = createIGW("testIGW", vpcId);
 
-        // Create RouteTable
-//        createRouteTable("testRouteTable", vpcId, subnetId, igwId);
+        // Create RouteTable with IGW
+//        createRouteTableWithIGW("testRouteTable", vpcId, subnetId, igwId);
 
-        // Create Keypair
-//        createKeyPair("keypair");
+        // Create RouteTable with NGW
+//        createRouteTableWithIGW("testRouteTable", vpcId, subnetId, natGId);
 
         // Create instance
-//        String instanceId = createInstance("testInstance", "ami-03ededff12e34e59e", subnetId, "keypair");
+//        String instanceId = createInstance("testInstance", "ami-0a3277ffce9146b74", subnetId, "keypair2");
 
-        // Create Elastic IP
-//        String elasticIP = createElasticAddress("testElastic");
+//        String allocationId = createElasticAddress("testElastic");
 
-        // Associate Elastic IP
-//        allocateElasticIP(elasticIP, instanceId);
+        // Create NAT Gateway
+//        String natGId = createNATGateway("testNAT", subnetId, allocationId);
 
-        // NAT gateway, endpoints pending
+        //For Sleep
+//        try {
+//            TimeUnit.SECONDS.sleep(190);
+//        } catch (InterruptedException e) {
+//            e.printStackTrace();
+
+//        }
+
+        // endpoints pending
 
     }
 }
